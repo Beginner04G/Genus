@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, Security, Form
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, date, timedelta
 from jose import jwt, JWTError
+import pytz
 from passlib.context import CryptContext
 import psycopg2
 import  os
@@ -188,7 +189,7 @@ def get_meter_status(meter_id: str, package: str = "PKG1", user: dict = Depends(
 
         last_comm_str = row[0].strftime("%Y-%m-%d %H:%M:%S")
         last_comm_date = row[0].date()
-        status = "communicating" if last_comm_date == date.today() else "noncommunicating"
+        status = "communicating" if last_comm_date == datetime.now(pytz.timezone("Asia/Kolkata")).date() else "noncommunicating"
 
         return {
             "meter_id": meter_id,
