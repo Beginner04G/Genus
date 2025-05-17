@@ -33,6 +33,12 @@ print("DB_URL1:", DB_URL1)
 print("DB_URL3:", DB_URL3)
 print("SECRET_KEY:", SECRET_KEY)
 
+# Password hashing configuration
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto"
+)
+
 def create_tables(db_url):
     try:
         with closing(psycopg2.connect(db_url)) as conn:
@@ -66,7 +72,6 @@ create_tables(DB_URL3)
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 security = HTTPBearer()
 
