@@ -1,206 +1,162 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from fastapi import FastAPI, HTTPException, Depends, Security
+from pydantic import BaseModel, EmailStr
+from datetime import datetime, date, timedelta
+from jose import jwt, JWTError
 from passlib.context import CryptContext
-from jose import JWTError, jwt
-from datetime import datetime, timedelta
-from typing import Optional
-from pydantic import BaseModel
-import os
+import psycopg2
+import  os
+import psycopg2.errors
+from contextlib import closing
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-# Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
-# Debug: Print environment variables
-print("DB_URL1:", os.getenv('DB_URL1'))
-print("DB_URL3:", os.getenv('DB_URL3'))
-print("SECRET_KEY:", os.getenv('SECRET_KEY'))
-
-# Database URLs
-DB_URL1 = os.getenv('DB_URL1') or os.getenv('DB_URL3')  # Use DB_URL3 as fallback
-DB_URL3 = os.getenv('DB_URL3')
-
-if not DB_URL1 or not DB_URL3:
-    raise ValueError("Database URLs not properly configured. Please set DB_URL1 and DB_URL3 in .env file")
-
-# Create database engines
-engine1 = create_engine(DB_URL1)
-engine3 = create_engine(DB_URL3)
-
-# Create session factories
-SessionLocal1 = sessionmaker(autocommit=False, autoflush=False, bind=engine1)
-SessionLocal3 = sessionmaker(autocommit=False, autoflush=False, bind=engine3)
-
-Base = declarative_base()
-
-# User model
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-
-# Create tables
-Base.metadata.create_all(bind=engine1)
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# JWT settings
-SECRET_KEY = os.getenv('SECRET_KEY', "your-secret-key")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-# FastAPI app
 app = FastAPI()
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend domain
+    allow_origins=["*"],  # or list your Flutter app URL here
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Pydantic models
-class UserCreate(BaseModel):
+# ✅ DATABASE CONFIG
+DB_URL = os.getenv("DB_URL")
+
+# ✅ AUTH CONFIG
+SECRET_KEY = os.getenv("SECRET_KEY")
+print("DB_URL:", DB_URL)
+print("SECRET_KEY:", SECRET_KEY)
+
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+security = HTTPBearer()
+
+# ✅ Pydantic Models
+class SignupModel(BaseModel):
     username: str
-    email: str
+    email: EmailStr
     password: str
 
-class UserResponse(BaseModel):
-    username: str
-    email: str
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    username: str
+class LoginModel(BaseModel):
+    email: EmailStr
+    password: str
 
-class TokenData(BaseModel):
-    username: Optional[str] = None
 
-# OAuth2 scheme
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-# Database dependency
-def get_db1():
-    db = SessionLocal1()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def get_db3():
-    db = SessionLocal3()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Helper functions
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
+# ✅ Utility Functions
+def hash_password(password: str):
     return pwd_context.hash(password)
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+
+def create_token(data: dict):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    to_encode.update({"exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_user(db: Session, username: str):
-    return db.query(User).filter(User.username == username).first()
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db1)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
+    token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
+        return payload
     except JWTError:
-        raise credentials_exception
-    user = get_user(db, username=token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-# Routes
+
+# ✅ SIGNUP API
 @app.get("/")
 def read_root():
-    return {"message": "API is live 🚀"}
-    
-@app.post("/signup", response_model=UserResponse)
-def signup(user: UserCreate, db: Session = Depends(get_db1)):
-    db_user = get_user(db, username=user.username)
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    hashed_password = get_password_hash(user.password)
-    db_user = User(username=user.username, email=user.email, hashed_password=hashed_password)
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return UserResponse(username=db_user.username, email=db_user.email)
+    return {"message": "FastAPI is running"}
 
-@app.post("/token", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db1)):
-    user = get_user(db, username=form_data.username)
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return Token(access_token=access_token, token_type="bearer", username=user.username)
+@app.post("/signup")
+def signup(user: SignupModel):
+    try:
+        with closing(psycopg2.connect(DB_URL)) as conn:
+            with conn.cursor() as cur:
+                hashed_pwd = hash_password(user.password)
+                cur.execute("""
+                    INSERT INTO "users" (username, email, password)
+                    VALUES (%s, %s, %s)
+                """, (user.username, user.email, hashed_pwd))
+                conn.commit()
+        return {"message": "User created successfully"}
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(status_code=400, detail="User already exists")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+# ✅ LOGIN API
+@app.post("/login")
+def login(data: LoginModel):
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute('SELECT id, username, password FROM "users" WHERE email = %s', (data.email,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not user or not verify_password(data.password, user[2]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        token = create_token({"sub": data.email})
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "username": user[1],
+            "user_id": user[0]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ✅ METER CHECK API
 @app.get("/meter-status")
-async def get_meter_status(
-    meter_id: str,
-    package: str,
-    current_user: User = Depends(get_current_user),
-    db1: Session = Depends(get_db1),
-    db3: Session = Depends(get_db3)
-):
-    # Select database based on package
-    db = db3 if package == "PKG3" else db1
-    
-    # Query meter status from selected database
-    # This is a placeholder - replace with your actual meter status query
-    meter_status = {
-        "meter_id": meter_id,
-        "status": "communicating",  # Replace with actual status
-        "last_communication": datetime.now().isoformat(),
-        "meter_type": "Smart Meter",
-        "communication_medium": "GPRS",
-        "ctwc": "100/5"
-    }
-    
-    return meter_status
+def get_meter_status(meter_id: str, user: dict = Depends(get_current_user)):
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                "LastCommunicationDatetime", 
+                "MeterType", 
+                "CommunicationMedium", 
+                "CTWC"
+            FROM "MeterData"
+            WHERE "MeterId" = %s
+        """, (meter_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
 
-# For local development
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+        if not row:
+            raise HTTPException(status_code=404, detail="Meter not found")
+
+        last_comm_str = row[0].strftime("%Y-%m-%d %H:%M:%S")
+        last_comm_date = row[0].date()
+        status = "communicating" if last_comm_date == date.today() else "noncommunicating"
+
+        return {
+            "meter_id": meter_id,
+            "status": status,
+            "last_communication": last_comm_str,
+            "meter_type": row[1],
+            "communication_medium": row[2],
+            "ctwc": row[3]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
