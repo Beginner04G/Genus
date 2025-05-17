@@ -15,17 +15,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Debug: Print environment variables
-print("DB_URL1:", os.getenv('DB_URL1'))
-print("DB_URL3:", os.getenv('DB_URL3'))
-print("SECRET_KEY:", os.getenv('SECRET_KEY'))
-
 # Database URLs
-DB_URL1 = os.getenv('DB_URL1') or os.getenv('DB_URL3')  # Use DB_URL3 as fallback
+DB_URL1 = os.getenv('DB_URL1')
 DB_URL3 = os.getenv('DB_URL3')
-
-if not DB_URL1 or not DB_URL3:
-    raise ValueError("Database URLs not properly configured. Please set DB_URL1 and DB_URL3 in .env file")
 
 # Create database engines
 engine1 = create_engine(DB_URL1)
