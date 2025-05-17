@@ -144,6 +144,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 # Routes
+@app.get("/")
+def read_root():
+    return {"message": "API is live 🚀"}
+    
 @app.post("/signup", response_model=UserResponse)
 def signup(user: UserCreate, db: Session = Depends(get_db1)):
     db_user = get_user(db, username=user.username)
