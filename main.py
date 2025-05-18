@@ -29,9 +29,7 @@ DB_URL3 = os.getenv("DB_URL3")
 
 # ✅ AUTH CONFIG
 SECRET_KEY = os.getenv("SECRET_KEY")
-print("DB_URL1:", DB_URL1)
-print("DB_URL3:", DB_URL3)
-print("SECRET_KEY:", SECRET_KEY)
+
 
 # Password hashing configuration
 pwd_context = CryptContext(
