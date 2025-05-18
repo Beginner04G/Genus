@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, Depends, Security, Form
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, date, timedelta
 from jose import jwt, JWTError
-import pytz
 from passlib.context import CryptContext
 import psycopg2
 import  os
@@ -112,6 +111,17 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Security(securi
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+# Refresh token config
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+refresh_tokens_store = {}  # In-memory store: {refresh_token: user_email}
+
+# Utility to create refresh token
+def create_refresh_token(data: dict):
+    to_encode = data.copy()
+    to_encode.update({"exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
 # ✅ SIGNUP API
 @app.get("/")
 def read_root():
@@ -150,9 +160,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
         token = create_token({"sub": form_data.username})
+        refresh_token = create_refresh_token({"sub": form_data.username})
+        # Store refresh token in memory (for demo; use DB in production)
+        refresh_tokens_store[refresh_token] = form_data.username
 
         return {
             "access_token": token,
+            "refresh_token": refresh_token,
             "token_type": "bearer",
             "username": user[1],
             "user_id": user[0]
@@ -160,6 +174,27 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Endpoint to refresh access token
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+@app.post("/refresh-token")
+def refresh_token_endpoint(request: RefreshTokenRequest):
+    refresh_token = request.refresh_token
+    try:
+        payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_email = payload.get("sub")
+        # Check if refresh token is valid and present in store
+        if refresh_tokens_store.get(refresh_token) != user_email:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        # Optionally: remove used refresh token to prevent reuse (rotate)
+        # del refresh_tokens_store[refresh_token]
+        new_access_token = create_token({"sub": user_email})
+        return {"access_token": new_access_token, "token_type": "bearer"}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
 
 # ✅ METER CHECK API
@@ -189,7 +224,7 @@ def get_meter_status(meter_id: str, package: str = "PKG1", user: dict = Depends(
 
         last_comm_str = row[0].strftime("%Y-%m-%d %H:%M:%S")
         last_comm_date = row[0].date()
-        status = "communicating" if last_comm_date == datetime.now(pytz.timezone("Asia/Kolkata")).date() else "noncommunicating"
+        status = "communicating" if last_comm_date == date.today() else "noncommunicating"
 
         return {
             "meter_id": meter_id,
